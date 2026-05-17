@@ -14,7 +14,7 @@ from core.utils import estimate_tokens as _estimate_tokens
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-MODEL = "meta-llama/llama-4-scout"
+MODEL = "qwen/qwen3.5-flash-02-23"
 
 LABEL_PRIORITY = [
     "Instructions to Bidders",

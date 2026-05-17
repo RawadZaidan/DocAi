@@ -6,7 +6,7 @@ from openai import OpenAI
 from core.utils import strip_json_fences
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-VISION_MODEL = "anthropic/claude-sonnet-4-6"
+VISION_MODEL = "qwen/qwen3.5-flash-02-23"
 
 IMAGE_TYPES = {"png", "jpg", "jpeg", "webp", "gif"}
 
@@ -136,7 +136,6 @@ class InvoiceExtractor:
         if file_type == "pdf":
             return self._from_pdf_vision(io.BytesIO(raw_bytes), filename)
 
-        # For non-image, non-PDF formats (xlsx, csv, docx, txt) extract text and send to vision model
         from core.ingestor import DocumentIngestor
         text, _ = DocumentIngestor()._extract_fileobj(io.BytesIO(raw_bytes), f".{file_type}")
         response = self.client.chat.completions.create(
@@ -150,40 +149,65 @@ class InvoiceExtractor:
         return self._parse(response, filename)
 
     def _from_pdf_vision(self, file_obj: io.BytesIO, filename: str) -> dict:
-        """Extract images from a scanned PDF page and send to the vision model."""
+        """Extract images from a PDF and send to the vision model; fall back to text extraction."""
         import pypdf
 
         file_obj.seek(0)
         reader = pypdf.PdfReader(file_obj)
 
-        # Collect images from the first few pages (covers multi-page invoice headers)
+        from PIL import Image as _PILImage
+
         content_blocks = []
         for page in reader.pages[:4]:
             try:
                 for img in page.images:
-                    raw = img.data
-                    name = (img.name or "").lower()
-                    mime = "image/png" if name.endswith(".png") else "image/jpeg"
-                    b64 = base64.standard_b64encode(raw).decode("utf-8")
-                    content_blocks.append(
-                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
-                    )
+                    try:
+                        pil = _PILImage.open(io.BytesIO(img.data))
+                        buf = io.BytesIO()
+                        pil.convert("RGB").save(buf, format="PNG")
+                        b64 = base64.standard_b64encode(buf.getvalue()).decode("utf-8")
+                        content_blocks.append(
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                        )
+                    except Exception:
+                        continue
             except Exception:
                 continue
-            if len(content_blocks) >= 6:  # cap at 6 images to stay within token limits
+            if len(content_blocks) >= 6:
                 break
 
-        if not content_blocks:
-            return _empty_invoice_result(filename, "Could not extract text or images from this PDF.")
+        if content_blocks:
+            content_blocks.append(
+                {"type": "text", "text": EXTRACTION_PROMPT + "\n\nExtract all invoice data from these invoice page images."}
+            )
+            response = self.client.chat.completions.create(
+                model=VISION_MODEL,
+                max_tokens=1500,
+                messages=[{"role": "user", "content": content_blocks}],
+            )
+            return self._parse(response, filename)
 
-        content_blocks.append(
-            {"type": "text", "text": EXTRACTION_PROMPT + "\n\nExtract all invoice data from these invoice page images."}
-        )
+        # No embedded images — fall back to text extraction
+        pages_text = []
+        for page in reader.pages[:10]:
+            try:
+                t = page.extract_text()
+                if t:
+                    pages_text.append(t)
+            except Exception:
+                continue
+
+        text = "\n\n".join(pages_text).strip()
+        if not text:
+            return _empty_invoice_result(filename, "Could not extract text or images from this PDF.")
 
         response = self.client.chat.completions.create(
             model=VISION_MODEL,
             max_tokens=1500,
-            messages=[{"role": "user", "content": content_blocks}],
+            messages=[
+                {"role": "system", "content": EXTRACTION_PROMPT},
+                {"role": "user", "content": f"Extract all invoice data from this document:\n\n{text[:30000]}"},
+            ],
         )
         return self._parse(response, filename)
 
