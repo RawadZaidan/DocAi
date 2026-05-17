@@ -1,3 +1,4 @@
+import io
 import re
 import os
 import pandas as pd
@@ -47,19 +48,27 @@ class ItemsParser:
         for fname, meta in docs.items():
             ftype = meta.get("file_type", "")
             fpath = meta.get("path", "")
+            raw_bytes = meta.get("raw_bytes")
             is_financial = (
                 meta.get("label") == "Financial Template"
                 or ftype in ("xlsx", "csv")
             )
             if not is_financial:
                 continue
-            if not fpath or not os.path.exists(fpath):
+
+            # Resolve file source: real path (load_folder) or bytes (load_files)
+            if raw_bytes is not None:
+                file_source = io.BytesIO(raw_bytes)
+            elif fpath and os.path.exists(fpath):
+                file_source = fpath
+            else:
                 continue
+
             try:
                 if ftype == "xlsx":
-                    lots = self._parse_xlsx(fpath, fname)
+                    lots = self._parse_xlsx(file_source, fname)
                 elif ftype == "csv":
-                    lots = self._parse_csv(fpath, fname)
+                    lots = self._parse_csv(file_source, fname)
                 else:
                     continue
                 results.extend(lots)
@@ -76,8 +85,8 @@ class ItemsParser:
     # Excel
     # ------------------------------------------------------------------
 
-    def _parse_xlsx(self, fpath: str, fname: str) -> list:
-        wb = openpyxl.load_workbook(fpath, data_only=True)
+    def _parse_xlsx(self, source, fname: str) -> list:
+        wb = openpyxl.load_workbook(source, data_only=True)
         lots = []
 
         for sheet_name in wb.sheetnames:
@@ -91,8 +100,8 @@ class ItemsParser:
     # CSV
     # ------------------------------------------------------------------
 
-    def _parse_csv(self, fpath: str, fname: str) -> list:
-        df = pd.read_csv(fpath, header=None, encoding="utf-8", on_bad_lines="skip")
+    def _parse_csv(self, source, fname: str) -> list:
+        df = pd.read_csv(source, header=None, encoding="utf-8", on_bad_lines="skip")
         rows = [list(r) for r in df.values.tolist()]
         return self._extract_lots(rows, fname, fname)
 

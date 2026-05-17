@@ -89,7 +89,8 @@ class DocumentIngestor:
             if ext not in supported:
                 continue
             try:
-                data = io.BytesIO(uf.read())
+                raw = uf.read()
+                data = io.BytesIO(raw)
                 text, pages = self._extract_fileobj(data, ext)
                 docs[fname] = {
                     "text": text,
@@ -99,6 +100,7 @@ class DocumentIngestor:
                     "label": "Unknown",
                     "confidence": 0.0,
                     "path": fname,
+                    "raw_bytes": raw,
                 }
             except Exception as e:
                 st.session_state["errors"].append({"file": fname, "error": str(e)})

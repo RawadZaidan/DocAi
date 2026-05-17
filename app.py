@@ -13,6 +13,8 @@ from core.query_engine import QueryEngine
 from core.returnable_docs import ReturnableDocsExtractor
 from core.legal_analyzer import LegalAnalyzer, LEGAL_LABEL_KEYWORDS
 from core.invoice_extractor import InvoiceExtractor
+from core.codemap import CodemapBuilder
+from core.mindmap import MindMapBuilder
 
 st.set_page_config(page_title="DocAI", layout="wide")
 
@@ -22,6 +24,8 @@ st.session_state.setdefault("active_mode", "🏗️ Tender")
 st.session_state.setdefault("docs", None)
 st.session_state.setdefault("returnable_docs", None)
 st.session_state.setdefault("financial_results", None)
+st.session_state.setdefault("codemap", "")
+st.session_state.setdefault("mindmap", "")
 st.session_state.setdefault("qa_history", [])
 # Legal
 st.session_state.setdefault("legal_docs", None)
@@ -179,11 +183,18 @@ if mode == "🏗️ Tender" and tender_clicked:
         with st.spinner("Parsing items and lots..."):
             ip = ItemsParser()
             financial_results = ip.parse(docs)
+            progress.progress(90)
+
+        with st.spinner("Building codemap and mind map..."):
+            codemap = CodemapBuilder().build(docs)
+            mindmap = MindMapBuilder().build(docs)
             progress.progress(100)
 
         st.session_state["docs"] = docs
         st.session_state["returnable_docs"] = returnable_docs
         st.session_state["financial_results"] = financial_results
+        st.session_state["codemap"] = codemap
+        st.session_state["mindmap"] = mindmap
         st.success(f"✅ Analysis complete. {len(docs)} files processed.")
 
 # ── Legal pipeline ───────────────────────────────────────────
@@ -287,6 +298,24 @@ if mode == "🏗️ Tender":
                 use_container_width=True,
                 hide_index=True,
             )
+
+            st.markdown("---")
+            cm = st.session_state.get("codemap", "")
+            mm = st.session_state.get("mindmap", "")
+
+            col_cm, col_mm = st.columns(2)
+            with col_cm:
+                with st.expander("🗺️ Document Codemap", expanded=False):
+                    if cm:
+                        st.code(cm, language=None)
+                    else:
+                        st.info("Codemap not yet generated.")
+            with col_mm:
+                with st.expander("🧠 Tender Mind Map", expanded=False):
+                    if mm:
+                        st.code(mm, language=None)
+                    else:
+                        st.info("Mind map not yet generated.")
 
     # ── Tab 2: Returnable Docs ─────────────────────────────
     with tab2:
@@ -465,7 +494,12 @@ if mode == "🏗️ Tender":
                 with st.spinner("Analyzing tender documents..."):
                     qe = QueryEngine()
                     try:
-                        result = qe.answer(question.strip(), st.session_state["docs"])
+                        result = qe.answer(
+                            question.strip(),
+                            st.session_state["docs"],
+                            codemap=st.session_state.get("codemap", ""),
+                            mindmap=st.session_state.get("mindmap", ""),
+                        )
                         st.session_state["qa_history"].append({
                             "question": question.strip(),
                             "answer": result["answer"],
@@ -473,6 +507,7 @@ if mode == "🏗️ Tender":
                             "output_tokens": result["output_tokens"],
                             "docs_included": result["docs_included"],
                             "docs_skipped": result["docs_skipped"],
+                            "corpus_coverage": result.get("corpus_coverage", 0.0),
                         })
                     except Exception as e:
                         st.error(f"API error: {e}")
@@ -480,7 +515,11 @@ if mode == "🏗️ Tender":
             if st.session_state["qa_history"]:
                 latest = st.session_state["qa_history"][-1]
                 st.markdown(latest["answer"])
-                st.caption(f"Tokens used: {latest['input_tokens']:,} in / {latest['output_tokens']:,} out")
+                coverage = latest.get("corpus_coverage", 0.0)
+                st.caption(
+                    f"Tokens used: {latest['input_tokens']:,} in / {latest['output_tokens']:,} out"
+                    f"  ·  Corpus coverage: {coverage:.0%} of documents included in full"
+                )
                 with st.expander("📂 Documents included in this query"):
                     for fn in latest.get("docs_included", []):
                         st.write(f"  • {fn}")

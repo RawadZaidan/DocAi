@@ -242,11 +242,29 @@ TENDER DOCUMENTS:
             text = meta.get("text", "")
             for category, patterns in _compiled_fallback.items():
                 for pattern in patterns:
-                    for match in pattern.findall(text):
-                        raw = match.strip()
+                    for m in pattern.finditer(text):
+                        # Extract the full sentence/line containing the match
+                        line_start = text.rfind("\n", 0, m.start())
+                        line_start = line_start + 1 if line_start != -1 else 0
+                        line_end_nl = text.find("\n", m.end())
+                        line_end_dot = text.find(".", m.end())
+                        if line_end_nl == -1 and line_end_dot == -1:
+                            line_end = len(text)
+                        elif line_end_nl == -1:
+                            line_end = line_end_dot + 1
+                        elif line_end_dot == -1:
+                            line_end = line_end_nl
+                        else:
+                            line_end = min(line_end_nl, line_end_dot + 1)
+                        raw = text[line_start:line_end].strip()
                         if len(raw) < 5:
                             continue
-                        doc_name = re.sub(r"\s+", " ", raw).strip().title()[:120]
+                        # Truncate at word boundary, max 150 chars
+                        cleaned = re.sub(r"\s+", " ", raw).strip()
+                        if len(cleaned) > 150:
+                            cut = cleaned[:150].rsplit(" ", 1)[0]
+                            cleaned = cut + "…"
+                        doc_name = cleaned.title()[:160]
 
                         is_dupe = any(
                             fuzz.ratio(doc_name.lower(), ex["doc_name"].lower()) >= 80
