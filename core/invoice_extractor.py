@@ -71,6 +71,18 @@ Return ONLY raw JSON (no markdown fences, no explanation). Use this exact struct
     "swift": null,
     "routing": null
   },
+  "shipping": {
+    "shipping_mode": null,
+    "incoterms": null,
+    "port_of_loading": null,
+    "port_of_discharge": null,
+    "destination": null,
+    "lead_time": null,
+    "estimated_delivery": null,
+    "carrier": null,
+    "tracking_number": null,
+    "shipping_cost": null
+  },
   "notes": null,
   "confidence": "High"
 }
@@ -79,6 +91,7 @@ Rules:
 - Use null for any field not present in the invoice.
 - Numbers must be numeric (not strings): quantity, unit_price, subtotal, total, tax_amount, etc.
 - For currency_conversions: if the invoice is NOT in USD, provide approximate USD and EUR equivalents using your knowledge of exchange rates. If already USD, set usd_rate to 1.0.
+- For shipping: extract any logistics details such as shipping mode (air, sea, road, courier), Incoterms (FOB, CIF, EXW, etc.), ports, lead time, estimated delivery date, carrier, tracking number, and shipping cost. Use null if not present.
 - confidence: High if most fields extracted cleanly, Medium if some ambiguity, Low if document is unclear."""
 
 
@@ -96,6 +109,7 @@ def _empty_invoice_result(filename: str, notes: str = "") -> dict:
         "total": None, "currency": None, "currency_symbol": None,
         "currency_conversions": {"usd_rate": None, "eur_rate": None, "total_usd": None, "total_eur": None, "rate_note": None},
         "bank_details": {k: None for k in ["bank_name", "account_number", "iban", "swift", "routing"]},
+        "shipping": {k: None for k in ["shipping_mode", "incoterms", "port_of_loading", "port_of_discharge", "destination", "lead_time", "estimated_delivery", "carrier", "tracking_number", "shipping_cost"]},
         "notes": notes or None,
         "input_tokens": 0, "output_tokens": 0,
     }
