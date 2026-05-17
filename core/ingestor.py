@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import pandas as pd
@@ -77,6 +78,32 @@ class DocumentIngestor:
                     st.session_state["errors"].append({"file": fname, "error": str(e)})
         return docs
 
+    def load_files(self, uploaded_files: list) -> dict:
+        docs = {}
+        if "errors" not in st.session_state:
+            st.session_state["errors"] = []
+        for uf in uploaded_files:
+            fname = uf.name
+            ext = os.path.splitext(fname)[1].lower()
+            supported = (".pdf", ".docx", ".xlsx", ".csv")
+            if ext not in supported:
+                continue
+            try:
+                data = io.BytesIO(uf.read())
+                text, pages = self._extract_fileobj(data, ext)
+                docs[fname] = {
+                    "text": text,
+                    "pages": pages,
+                    "file_type": ext.lstrip("."),
+                    "char_count": len(text),
+                    "label": "Unknown",
+                    "confidence": 0.0,
+                    "path": fname,
+                }
+            except Exception as e:
+                st.session_state["errors"].append({"file": fname, "error": str(e)})
+        return docs
+
     def _extract(self, fpath: str, ext: str):
         if ext == ".pdf":
             return self._extract_pdf(fpath)
@@ -88,8 +115,19 @@ class DocumentIngestor:
             return self._extract_csv(fpath)
         raise ValueError(f"Unsupported file type: {ext}")
 
-    def _extract_pdf(self, fpath: str):
-        reader = pypdf.PdfReader(fpath)
+    def _extract_fileobj(self, fileobj: io.BytesIO, ext: str):
+        if ext == ".pdf":
+            return self._extract_pdf(fileobj)
+        elif ext == ".docx":
+            return self._extract_docx(fileobj)
+        elif ext == ".xlsx":
+            return self._extract_xlsx(fileobj)
+        elif ext == ".csv":
+            return self._extract_csv(fileobj)
+        raise ValueError(f"Unsupported file type: {ext}")
+
+    def _extract_pdf(self, source):
+        reader = pypdf.PdfReader(source)
         pages = []
         for i, page in enumerate(reader.pages):
             try:
@@ -102,8 +140,8 @@ class DocumentIngestor:
         )
         return joined, pages
 
-    def _extract_docx(self, fpath: str):
-        document = docx.Document(fpath)
+    def _extract_docx(self, source):
+        document = docx.Document(source)
         parts = []
         for para in document.paragraphs:
             if not para.text.strip():
@@ -120,8 +158,8 @@ class DocumentIngestor:
         joined = "\n".join(parts)
         return joined, [joined]
 
-    def _extract_xlsx(self, fpath: str):
-        wb = openpyxl.load_workbook(fpath, data_only=True)
+    def _extract_xlsx(self, source):
+        wb = openpyxl.load_workbook(source, data_only=True)
         sheets = []
         sheet_texts = []
         for name in wb.sheetnames:
@@ -142,8 +180,8 @@ class DocumentIngestor:
         joined = "\n".join(sheets)
         return joined, sheet_texts
 
-    def _extract_csv(self, fpath: str):
-        df = pd.read_csv(fpath, encoding="utf-8", on_bad_lines="skip")
+    def _extract_csv(self, source):
+        df = pd.read_csv(source, encoding="utf-8", on_bad_lines="skip")
         md = df.to_markdown(index=False)
         return md, [md]
 

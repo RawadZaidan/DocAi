@@ -124,14 +124,40 @@ def _build_focused_context(docs: dict, max_tokens: int = 80_000) -> tuple[str, l
 
 
 def _parse_json_from_response(raw: str) -> list[dict]:
-    # Strip markdown code fences
-    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
-    raw = re.sub(r"\s*```$", "", raw.strip())
-    # Find the outermost JSON array
-    match = re.search(r"\[[\s\S]*\]", raw)
-    if match:
-        return json.loads(match.group(0))
-    return json.loads(raw)
+    # Strip markdown fences (handles ```json ... ``` and bare ``` ... ```)
+    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE | re.MULTILINE)
+    raw = re.sub(r"\s*```\s*$", "", raw.strip())
+
+    # Isolate the outermost JSON array if prose surrounds it
+    array_match = re.search(r"\[[\s\S]*\]", raw)
+    candidate = array_match.group(0) if array_match else raw
+
+    # Strategy 1: direct parse
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 2: fix trailing commas before ] or } (common LLM mistake)
+    fixed = re.sub(r",\s*([}\]])", r"\1", candidate)
+    try:
+        return json.loads(fixed)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 3: extract each {...} object individually and stitch them together
+    objects = []
+    for m in re.finditer(r"\{[\s\S]*?\}", candidate):
+        try:
+            obj = json.loads(m.group(0))
+            if isinstance(obj, dict):
+                objects.append(obj)
+        except json.JSONDecodeError:
+            pass
+    if objects:
+        return objects
+
+    raise ValueError(f"Could not extract valid JSON from model response. First 300 chars: {raw[:300]}")
 
 
 class ReturnableDocsExtractor:
@@ -162,19 +188,20 @@ class ReturnableDocsExtractor:
 
         user_prompt = f"""Analyze the tender documents below and extract ALL required returnable documents.
 
-For each returnable, output a JSON object with exactly these fields:
-- "doc_name": concise title (e.g. "ISO 9001 Certificate", "Form 1 – Bid Submission Form")
-- "category": one of: Certifications | Forms | Financial Documents | Legal / Corporate | Technical Documents | Experience / References | Other
-- "mandatory": true if explicitly required/mandatory, false if optional or preferred
-- "description": one sentence explaining what this document is and why it is required
-- "source_file": the filename where this requirement is mentioned
+Return ONLY a valid JSON array of objects. No markdown, no code fences, no prose before or after.
+Every object must have exactly these keys (all strings/booleans, no extra keys):
+  "doc_name"    – concise title, e.g. "ISO 9001 Certificate" or "Form 1 – Bid Submission Form"
+  "category"    – exactly one of: Certifications | Forms | Financial Documents | Legal / Corporate | Technical Documents | Experience / References | Other
+  "mandatory"   – true or false (boolean, not string)
+  "description" – one sentence: what the document is and why it is required
+  "source_file" – filename where this requirement appears
 
-Return ONLY a valid JSON array — no markdown, no prose, no commentary.
+Start your response with [ and end with ]. Do not include any other text.
 
 TENDER DOCUMENTS:
 {context}
 
-JSON array of returnables:"""
+["""
 
         client = OpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL)
         response = client.chat.completions.create(
