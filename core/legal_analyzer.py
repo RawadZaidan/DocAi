@@ -2,7 +2,7 @@ import os
 import json
 import streamlit as st
 from openai import OpenAI
-import tiktoken
+from core.utils import estimate_tokens, strip_json_fences, get_tokenizer
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 MODEL = "qwen/qwen3.5-flash-02-23"
@@ -38,16 +38,6 @@ LEGAL_LABEL_KEYWORDS = {
     ],
 }
 
-_tokenizer = None
-
-
-def _get_tokenizer():
-    global _tokenizer
-    if _tokenizer is None:
-        _tokenizer = tiktoken.get_encoding("cl100k_base")
-    return _tokenizer
-
-
 class LegalAnalyzer:
     def __init__(self):
         self.client = OpenAI(
@@ -73,33 +63,38 @@ class LegalAnalyzer:
             docs[fname]["confidence"] = round(best_score, 3)
         return docs
 
-    def estimate_tokens(self, text: str) -> int:
-        return len(_get_tokenizer().encode(text))
-
     def build_context(self, docs: dict, max_tokens: int = 150_000) -> tuple:
+        enc = get_tokenizer()
         included = []
         skipped = []
         parts = []
         acc = 0
         for fname, meta in docs.items():
-            block = (
-                f"=== DOCUMENT: {fname} | TYPE: {meta.get('label', 'Unknown')} ===\n"
-                f"{meta.get('text', '')}\n"
-                f"=== END: {fname} ===\n"
-            )
-            tok = self.estimate_tokens(block)
-            if acc + tok > max_tokens:
-                skipped.append(fname)
-                if "errors" not in st.session_state:
-                    st.session_state["errors"] = []
-                st.session_state["errors"].append({
-                    "file": fname,
-                    "error": "Token budget exceeded — not included in Legal analysis context",
-                })
-                continue
-            parts.append(block)
-            included.append(fname)
-            acc += tok
+            header = f"=== DOCUMENT: {fname} | TYPE: {meta.get('label', 'Unknown')} ===\n"
+            footer = f"\n=== END: {fname} ===\n"
+            body = meta.get("text", "")
+            block = header + body + footer
+            tok = estimate_tokens(block)
+            if acc + tok <= max_tokens:
+                parts.append(block)
+                included.append(fname)
+                acc += tok
+            else:
+                available = max_tokens - acc
+                if available > 500:
+                    keep = max(0, available - estimate_tokens(header + footer) - 50)
+                    truncated = enc.decode(enc.encode(body)[:keep])
+                    parts.append(header + truncated + "\n[... TRUNCATED ...]\n" + footer)
+                    included.append(f"{fname} (partial)")
+                    acc = max_tokens
+                else:
+                    skipped.append(fname)
+                    if "errors" not in st.session_state:
+                        st.session_state["errors"] = []
+                    st.session_state["errors"].append({
+                        "file": fname,
+                        "error": "Token budget exceeded — not included in Legal analysis context",
+                    })
         return "\n".join(parts), included, skipped
 
     def analyze(self, docs: dict) -> dict:
@@ -125,6 +120,7 @@ class LegalAnalyzer:
 
         user = f"LEGAL DOCUMENTS:\n\n{context}\n\n---\n\nAnalyze and return structured JSON."
 
+        _empty = {"parties": [], "key_dates": [], "obligations": [], "risk_clauses": [], "defined_terms": []}
         response = None
         try:
             response = self.client.chat.completions.create(
@@ -135,27 +131,12 @@ class LegalAnalyzer:
                     {"role": "user", "content": user},
                 ],
             )
-            raw = response.choices[0].message.content.strip()
-            if "```" in raw:
-                raw = raw.split("```")[1]
-                if raw.lower().startswith("json"):
-                    raw = raw[4:]
-                raw = raw.strip()
+            raw = strip_json_fences(response.choices[0].message.content or "")
             data = json.loads(raw)
         except json.JSONDecodeError as e:
-            data = {
-                "summary": "AI response could not be parsed as JSON.",
-                "parse_error": str(e),
-                "parties": [], "key_dates": [], "obligations": [],
-                "risk_clauses": [], "defined_terms": [],
-            }
+            data = {"summary": "AI response could not be parsed as JSON.", "parse_error": str(e), **_empty}
         except Exception as e:
-            data = {
-                "summary": "",
-                "error": str(e),
-                "parties": [], "key_dates": [], "obligations": [],
-                "risk_clauses": [], "defined_terms": [],
-            }
+            data = {"summary": "", "error": str(e), **_empty}
 
         data["docs_included"] = included
         data["docs_skipped"] = skipped

@@ -1,14 +1,5 @@
 import re
-import tiktoken
-
-_tokenizer = None
-
-
-def _get_tokenizer():
-    global _tokenizer
-    if _tokenizer is None:
-        _tokenizer = tiktoken.get_encoding("cl100k_base")
-    return _tokenizer
+from core.utils import estimate_tokens
 
 
 _DATE_PATTERNS = [
@@ -44,7 +35,7 @@ class CodemapBuilder:
             pages = len(meta.get("pages", []))
             char_count = meta.get("char_count", 0)
             text = meta.get("text", "")
-            est_tokens = self.estimate_tokens(text)
+            est_tokens = estimate_tokens(text)
 
             headings = self._extract_headings(text)
             entities = self._extract_entities(text)
@@ -62,9 +53,6 @@ class CodemapBuilder:
 
         lines.append("=== END CODEMAP ===")
         return "\n".join(lines)
-
-    def estimate_tokens(self, text: str) -> int:
-        return len(_get_tokenizer().encode(text))
 
     def _extract_headings(self, text: str) -> list:
         lines = text.split("\n")

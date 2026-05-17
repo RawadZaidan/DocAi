@@ -129,6 +129,8 @@ class DocumentIngestor:
         raise ValueError(f"Unsupported file type: {ext}")
 
     def _extract_pdf(self, source):
+        if pypdf is None:
+            raise ImportError("pypdf is not installed. Run: pip install pypdf")
         reader = pypdf.PdfReader(source)
         pages = []
         for i, page in enumerate(reader.pages):
@@ -143,6 +145,8 @@ class DocumentIngestor:
         return joined, pages
 
     def _extract_docx(self, source):
+        if docx is None:
+            raise ImportError("python-docx is not installed. Run: pip install python-docx")
         document = docx.Document(source)
         parts = []
         for para in document.paragraphs:
@@ -161,6 +165,8 @@ class DocumentIngestor:
         return joined, [joined]
 
     def _extract_xlsx(self, source):
+        if openpyxl is None:
+            raise ImportError("openpyxl is not installed. Run: pip install openpyxl")
         wb = openpyxl.load_workbook(source, data_only=True)
         sheets = []
         sheet_texts = []
@@ -183,7 +189,12 @@ class DocumentIngestor:
         return joined, sheet_texts
 
     def _extract_csv(self, source):
-        df = pd.read_csv(source, encoding="utf-8", on_bad_lines="skip")
+        try:
+            df = pd.read_csv(source, encoding="utf-8", on_bad_lines="skip")
+        except UnicodeDecodeError:
+            if hasattr(source, "seek"):
+                source.seek(0)
+            df = pd.read_csv(source, encoding="latin-1", on_bad_lines="skip")
         md = df.to_markdown(index=False)
         return md, [md]
 

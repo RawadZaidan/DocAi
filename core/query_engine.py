@@ -4,7 +4,7 @@ import re
 from collections import Counter
 import streamlit as st
 from openai import OpenAI
-import tiktoken
+from core.utils import get_tokenizer, estimate_tokens as _estimate_tokens
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -19,7 +19,7 @@ LABEL_PRIORITY = [
     "Unknown",
 ]
 
-_STOPWORDS = {
+_STOPWORDS: set = {
     # Common English
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
     "have", "has", "had", "do", "does", "did", "will", "would", "could",
@@ -38,19 +38,9 @@ _STOPWORDS = {
     "section", "article", "clause", "part", "page",
 }
 
-_tokenizer = None
-
-
-def _get_tokenizer():
-    global _tokenizer
-    if _tokenizer is None:
-        _tokenizer = tiktoken.get_encoding("cl100k_base")
-    return _tokenizer
-
-
 class QueryEngine:
     def estimate_tokens(self, text: str) -> int:
-        return len(_get_tokenizer().encode(text))
+        return _estimate_tokens(text)
 
     # ------------------------------------------------------------------
     # Smart document ranking
@@ -117,7 +107,7 @@ class QueryEngine:
         large to fit in full, includes a partial truncation instead of skipping.
         Documents that cannot fit even partially are represented by codemap only.
         """
-        enc = _get_tokenizer()
+        enc = get_tokenizer()
 
         header_parts = [p for p in [codemap, mindmap] if p]
         header_text = "\n\n".join(header_parts)

@@ -10,11 +10,7 @@ try:
 except ImportError:
     OpenAI = None
 
-try:
-    import tiktoken
-    _enc = tiktoken.get_encoding("cl100k_base")
-except Exception:
-    _enc = None
+from core.utils import estimate_tokens as _estimate_tokens
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -84,12 +80,6 @@ _compiled_fallback: dict[str, list] = {
     cat: [re.compile(p, re.IGNORECASE) for p in patterns]
     for cat, patterns in _FALLBACK_PATTERNS.items()
 }
-
-
-def _estimate_tokens(text: str) -> int:
-    if _enc:
-        return len(_enc.encode(text))
-    return len(text) // 4
 
 
 def _build_focused_context(docs: dict, max_tokens: int = 80_000) -> tuple[str, list[str], list[str]]:
@@ -243,20 +233,14 @@ TENDER DOCUMENTS:
             for category, patterns in _compiled_fallback.items():
                 for pattern in patterns:
                     for m in pattern.finditer(text):
-                        # Extract the full sentence/line containing the match
-                        line_start = text.rfind("\n", 0, m.start())
-                        line_start = line_start + 1 if line_start != -1 else 0
-                        line_end_nl = text.find("\n", m.end())
-                        line_end_dot = text.find(".", m.end())
-                        if line_end_nl == -1 and line_end_dot == -1:
+                        line_start = text.rfind("\n", 0, m.start()) + 1  # 0 when no prior \n
+                        line_end = text.find("\n", m.end())
+                        if line_end == -1:
                             line_end = len(text)
-                        elif line_end_nl == -1:
-                            line_end = line_end_dot + 1
-                        elif line_end_dot == -1:
-                            line_end = line_end_nl
-                        else:
-                            line_end = min(line_end_nl, line_end_dot + 1)
-                        raw = text[line_start:line_end].strip()
+                        line = text[line_start:line_end].strip()
+                        # Truncate at first sentence boundary after the match
+                        dot = line.find(".", m.end() - line_start)
+                        raw = line[:dot + 1].strip() if dot != -1 else line
                         if len(raw) < 5:
                             continue
                         # Truncate at word boundary, max 150 chars
