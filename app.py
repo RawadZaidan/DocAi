@@ -13,6 +13,10 @@ from core.query_engine import QueryEngine
 from core.returnable_docs import ReturnableDocsExtractor
 from core.legal_analyzer import LegalAnalyzer, LEGAL_LABEL_KEYWORDS
 from core.invoice_extractor import InvoiceExtractor
+
+@st.cache_resource
+def get_invoice_extractor():
+    return InvoiceExtractor()
 from core.codemap import CodemapBuilder
 from core.mindmap import MindMapBuilder
 
@@ -242,7 +246,7 @@ if mode == "🧾 Invoice" and invoice_clicked:
     if not api_key:
         st.error("Add `OPENROUTER_API_KEY` to your `.env` file to enable Invoice extraction.")
     else:
-        extractor = InvoiceExtractor()
+        extractor = get_invoice_extractor()
         results = []
         progress = st.progress(0)
         for i, uf in enumerate(invoice_files):
@@ -929,6 +933,12 @@ elif mode == "🧾 Invoice":
                     st.markdown("---")
                     st.subheader("Notes")
                     st.write(notes)
+
+                tandc = inv.get("terms_and_conditions")
+                if tandc:
+                    st.markdown("---")
+                    st.subheader("Terms & Conditions")
+                    st.write(tandc)
 
         # ── Summary table for multiple invoices ───────────
         if len(invoice_results) > 1:

@@ -1,0 +1,16 @@
+[
+  {
+    "document_type": "invoice",
+    "date": "04-01-2019",
+    "client_name": "Dayanne S.Clone",
+    "totals": [
+      {
+        "amount": "$ 545.00",
+        "currency": "USD"
+      }
+    ],
+    "confidence": 0.98,
+    "_file": "invoice#05987.pdf",
+    "_strategy": "scanned_pdf_vision"
+  }
+]

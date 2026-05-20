@@ -1,4 +1,3 @@
-import os
 import io
 import base64
 import json
@@ -20,7 +19,7 @@ def _timed(label: str):
     return decorator
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-VISION_MODEL = "google/gemma-3-12b-it"
+VISION_MODEL = "google/gemini-2.5-flash-lite"
 
 IMAGE_TYPES = {"png", "jpg", "jpeg", "webp", "gif"}
 
@@ -98,6 +97,7 @@ Return ONLY raw JSON (no markdown fences, no explanation). Use this exact struct
     "shipping_cost": null
   },
   "notes": null,
+  "terms_and_conditions": null,
   "confidence": "High"
 }
 
@@ -106,6 +106,8 @@ Rules:
 - Numbers must be numeric (not strings): quantity, unit_price, subtotal, total, tax_amount, etc.
 - For currency_conversions: if the invoice is NOT in USD, provide approximate USD and EUR equivalents using your knowledge of exchange rates. If already USD, set usd_rate to 1.0.
 - For shipping: extract any logistics details such as shipping mode (air, sea, road, courier), Incoterms (FOB, CIF, EXW, etc.), ports, lead time, estimated delivery date, carrier, tracking number, and shipping cost. Use null if not present.
+- notes: any free-text remarks, comments, or miscellaneous information on the document not captured elsewhere.
+- terms_and_conditions: the full terms and conditions, payment terms text, or legal fine-print printed on the document. Also capture payment condition clauses (e.g. "Net 30", "50% advance", "due on delivery") here if they appear as paragraph text rather than a single field.
 - confidence: High if most fields extracted cleanly, Medium if some ambiguity, Low if document is unclear."""
 
 
@@ -125,6 +127,7 @@ def _empty_invoice_result(filename: str, notes: str = "") -> dict:
         "bank_details": {k: None for k in ["bank_name", "account_number", "iban", "swift", "routing"]},
         "shipping": {k: None for k in ["shipping_mode", "incoterms", "port_of_loading", "port_of_discharge", "destination", "lead_time", "estimated_delivery", "carrier", "tracking_number", "shipping_cost"]},
         "notes": notes or None,
+        "terms_and_conditions": None,
         "input_tokens": 0, "output_tokens": 0,
     }
 
@@ -135,6 +138,7 @@ def _empty_invoice_result(filename: str, notes: str = "") -> dict:
 
 class InvoiceExtractor:
     def __init__(self):
+        import os
         self.client = OpenAI(
             api_key=os.environ.get("OPENROUTER_API_KEY"),
             base_url=OPENROUTER_BASE_URL,
@@ -180,86 +184,51 @@ class InvoiceExtractor:
 
     @_timed("_from_pdf_vision")
     def _from_pdf_vision(self, file_obj: io.BytesIO, filename: str) -> dict:
-        """Extract images from a PDF and send to the vision model; fall back to text extraction."""
-        import pypdf
+        """Render each PDF page to JPEG via fitz and send all pages to the vision LLM."""
+        file_obj.seek(0)
+        raw_bytes = file_obj.read()
+
+        try:
+            import fitz
+        except ImportError:
+            return _empty_invoice_result(filename, "pymupdf is required for PDF extraction: pip install pymupdf")
 
         t0 = time.perf_counter()
-        file_obj.seek(0)
-        reader = pypdf.PdfReader(file_obj)
-        print(f"[invoice_extractor]   pdf_read: {time.perf_counter()-t0:.2f}s")
-
-        from PIL import Image as _PILImage
-
-        t1 = time.perf_counter()
         content_blocks = []
-        MAX_DIM = 1024
-        for page in reader.pages[:4]:
-            try:
-                for img in page.images:
-                    try:
-                        pil = _PILImage.open(io.BytesIO(img.data)).convert("RGB")
-                        if max(pil.width, pil.height) > MAX_DIM:
-                            pil.thumbnail((MAX_DIM, MAX_DIM), _PILImage.LANCZOS)
-                        buf = io.BytesIO()
-                        pil.save(buf, format="JPEG", quality=85)
-                        b64 = base64.standard_b64encode(buf.getvalue()).decode("utf-8")
-                        content_blocks.append(
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-                        )
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-            if len(content_blocks) >= 6:
+        doc = fitz.open(stream=raw_bytes, filetype="pdf")
+        for i, page in enumerate(doc):
+            if i >= 4:
                 break
-        print(f"[invoice_extractor]   image_extraction+encode ({len(content_blocks)} images): {time.perf_counter()-t1:.2f}s")
-
-        if content_blocks:
+            pix = page.get_pixmap(matrix=fitz.Matrix(200 / 72, 200 / 72))
+            if pix.alpha:
+                pix = fitz.Pixmap(fitz.csRGB, pix)
+            b64 = base64.standard_b64encode(pix.tobytes("jpeg")).decode("utf-8")
             content_blocks.append(
-                {"type": "text", "text": EXTRACTION_PROMPT + "\n\nExtract all invoice data from these invoice page images."}
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
             )
-            t2 = time.perf_counter()
-            response = self.client.chat.completions.create(
-                model=VISION_MODEL,
-                max_tokens=1500,
-                messages=[{"role": "user", "content": content_blocks}],
-            )
-            print(f"[invoice_extractor]   api_call (vision, {len(content_blocks)-1} images): {time.perf_counter()-t2:.2f}s")
-            return self._parse(response, filename)
+        doc.close()
+        print(f"[invoice_extractor]   render+encode ({len(content_blocks)} pages): {time.perf_counter()-t0:.2f}s")
 
-        # No embedded images — fall back to text extraction
-        t3 = time.perf_counter()
-        pages_text = []
-        for page in reader.pages[:10]:
-            try:
-                t = page.extract_text()
-                if t:
-                    pages_text.append(t)
-            except Exception:
-                continue
-        print(f"[invoice_extractor]   text_extraction (fallback): {time.perf_counter()-t3:.2f}s")
+        if not content_blocks:
+            return _empty_invoice_result(filename, "Could not extract text or render pages from this PDF.")
 
-        text = "\n\n".join(pages_text).strip()
-        if not text:
-            return _empty_invoice_result(filename, "Could not extract text or images from this PDF.")
-
+        content_blocks.append(
+            {"type": "text", "text": EXTRACTION_PROMPT + "\n\nExtract all invoice data from these invoice page images."}
+        )
         t4 = time.perf_counter()
         response = self.client.chat.completions.create(
             model=VISION_MODEL,
             max_tokens=1500,
-            messages=[
-                {"role": "system", "content": EXTRACTION_PROMPT},
-                {"role": "user", "content": f"Extract all invoice data from this document:\n\n{text[:30000]}"},
-            ],
+            messages=[{"role": "user", "content": content_blocks}],
         )
-        print(f"[invoice_extractor]   api_call (text fallback): {time.perf_counter()-t4:.2f}s")
+        print(f"[invoice_extractor]   api_call (vision, {len(content_blocks)-1} pages): {time.perf_counter()-t4:.2f}s")
         return self._parse(response, filename)
 
     @_timed("_from_image")
     def _from_image(self, file_obj: io.BytesIO, filename: str, file_type: str) -> dict:
         file_obj.seek(0)
         b64 = base64.standard_b64encode(file_obj.read()).decode("utf-8")
-        mime = "image/jpeg" if file_type == "jpg" else f"image/{file_type}"
+        mime = "image/jpeg" if file_type in {"jpg", "jpeg"} else f"image/{file_type}"
 
         response = self.client.chat.completions.create(
             model=VISION_MODEL,
